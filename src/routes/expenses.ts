@@ -32,7 +32,8 @@ import { auditTx } from "../services/audit";
 import { validateAsset, validateAmount } from "../services/assets";
 import { assertParticipantsCanHoldAsset } from "../services/horizon";
 import { createExpenseSchema, updateExpenseSchema } from "../validations/expense";
-import { expenseListQuerySchema, listGroupExpenses } from "../services/expenses";
+import { expenseListQuerySchema } from "../schemas/expenses";
+import { listGroupExpenses } from "../services/expenses";
 import { rateLimited } from "../lib/rate-limit";
 
 /** Every route in this file takes a single opaque resource id. */
