@@ -981,11 +981,45 @@ async function reconcileSingleAnchor(
   }
 
   const attempt = job.retryCount + 1;
-  const result: PollResult = await anchorService.pollTransaction({
-    transferServer,
-    token: job.anchorToken,
-    id: job.externalTransactionId,
-  });
+  let result: PollResult;
+  try {
+    result = await anchorService.pollTransaction({
+      transferServer,
+      token: job.anchorToken,
+      id: job.externalTransactionId,
+    });
+  } catch (pollError) {
+    const reason = safeFailureMessage(pollError);
+    const exhausted = attempt >= ANCHOR_RETRY_POLICY.maxAttempts;
+    const errorCategory: JobFailureCategory = exhausted ? "permanent" : "transient";
+    const now = new Date();
+
+    await prisma.anchorSession.update({
+      where: { id: job.id },
+      data: {
+        lastPolledAt: now,
+        retryCount: attempt,
+        failureReason: reason,
+        errorCategory,
+        nextAttemptAt: exhausted
+          ? null
+          : new Date(Date.now() + retryDelayMs(attempt, ANCHOR_RETRY_POLICY)),
+      },
+    });
+
+    jobLog.error(
+      {
+        jobType: "anchor",
+        jobId: job.id,
+        attempt,
+        outcome: "failed",
+        category: errorCategory,
+        reason,
+      },
+      "anchor poll threw an unexpected error — classified and scheduled for retry"
+    );
+    return;
+  }
 
   const now = new Date();
 
@@ -1260,15 +1294,34 @@ export async function reconcileAnchors(): Promise<void> {
     try {
       await reconcileSingleAnchor(job, transferServer, ctx);
     } catch (error) {
+      const now = new Date();
+      const reason = safeFailureMessage(error);
+      const exhausted = job.retryCount + 1 >= ANCHOR_RETRY_POLICY.maxAttempts;
+      const errorCategory: JobFailureCategory = exhausted ? "permanent" : "transient";
+
+      await prisma.anchorSession.update({
+        where: { id: job.id },
+        data: {
+          lastPolledAt: now,
+          retryCount: job.retryCount + 1,
+          failureReason: reason,
+          errorCategory,
+          nextAttemptAt: exhausted
+            ? null
+            : new Date(Date.now() + retryDelayMs(job.retryCount + 1, ANCHOR_RETRY_POLICY)),
+        },
+      });
+
       loggerWithContext(log, ctx).error(
         {
           jobType: "anchor",
           jobId: job.id,
           attempt: job.retryCount + 1,
           outcome: "error",
-          reason: safeFailureMessage(error),
+          category: errorCategory,
+          reason,
         },
-        "unexpected error reconciling anchor session"
+        "unexpected error reconciling anchor session — retry scheduled"
       );
     } finally {
       await releaseAnchorSession(job.id);
